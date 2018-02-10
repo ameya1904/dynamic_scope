@@ -1,4 +1,5 @@
 #include<iostream>
+#include<string.h>
 #include<sstream>
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/RecursiveASTVisitor.h"
@@ -31,29 +32,63 @@ public:
         rewriter.setSourceMgr(Context->getSourceManager(),
             Context->getLangOpts());
     }
-  
+  /*
   bool VisitCXXRecordDecl(CXXRecordDecl *Declaration) {
-    if (Declaration->getQualifiedNameAsString() == "C") {
+    //if (Declaration->getQualifiedNameAsString() == "q") {
       FullSourceLoc FullLocation = Context->getFullLoc(Declaration->getLocStart());
       if (FullLocation.isValid()){
-        llvm::outs() << "Found declaration at "
+        llvm::outs() << "Found Record declaration at "
                      << FullLocation.getSpellingLineNumber() << ":"
                      << FullLocation.getSpellingColumnNumber() << "\n";
-        rewriter.InsertTextBefore(Declaration->getLocStart() , "Smoke weed everyday.");
+      //  rewriter.InsertTextBefore(Declaration->getLocStart() , "\/* inserted text *\/");
       }                 
-    }
+   // }
     return true;
   }
-  /*
-  bool VisitFunctionDecl(FunctionDecl *f) {
-		if (f->hasBody()) {
-			Stmt *FuncBody = f->getBody();
-			stringstream SSAfter;
-      SSAfter << f->getBody();
-      
+  */
+  
+	bool VisitFunctionDecl(FunctionDecl *f) {
+		if (f->isThisDeclarationADefinition()) {
+			FullSourceLoc loc = Context->getFullLoc (f->getLocStart() );
+      			llvm::outs()<<f->getQualifiedNameAsString()<<" declared at " << loc.getSpellingLineNumber()<<":"<<loc.getSpellingColumnNumber();
+			unsigned num_param =f->getNumParams(); 
+			outs()<<".Number of parameters = "<<num_param<<"\n";
+			if (num_param > 0 ){
+				ArrayRef< ParmVarDecl * > param_array=f->parameters();
+				for(unsigned i=0;i<num_param;i++){
+					outs()<<"\t"<<param_array[i]->getNameAsString()<<"\t";
+					QualType type=param_array[i]->getOriginalType();
+					outs()<<type.getAsString()<<"\n";
+				}
+			}
+			Stmt *body = f->getBody();
+			body->dumpColor();
+			clang::Stmt::child_iterator begin= body->child_begin();
+			clang::Stmt::child_iterator end= body->child_end();
+			while(begin != end){
+
+
+				std::string stmt_type=begin->getStmtClassName();
+				//cout<<a<<"\n";
+				if (stmt_type.compare("DeclStmt")==0 ){
+					
+		
+				}	
+				begin++;
+			}
+			
 		}
 		return true;
-	}*/
+	}
+	
+	/*
+	bool VisitVarDecl(VarDecl* vd){
+		FullSourceLoc loc = Context->getFullLoc (vd->getLocStart() );
+		llvm::outs()<<vd->getQualifiedNameAsString()<<" declared at " << loc.getSpellingLineNumber()<<":"<<loc.getSpellingColumnNumber();
+		
+		return true;	
+	}
+	*/
 private:
   ASTContext *Context;
 };
@@ -84,7 +119,7 @@ int main(int argc,const char **argv) {
   ClangTool Tool(OptionsParser.getCompilations(),
                  OptionsParser.getSourcePathList());
   int result = Tool.run(newFrontendActionFactory<FindNamedClassAction>().get());
-  rewriter.getEditBuffer(rewriter.getSourceMgr().getMainFileID()).write(errs());
+  //rewriter.getEditBuffer(rewriter.getSourceMgr().getMainFileID()).write(errs());
   return result;
   
   
