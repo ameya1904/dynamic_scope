@@ -24,7 +24,7 @@ class MyASTVisitor : public RecursiveASTVisitor<MyASTVisitor> {
 public:
   MyASTVisitor(Rewriter &R) : TheRewriter(R) {}
 
-  bool VisitStmt(Stmt *s) {
+  /*bool VisitStmt(Stmt *s) {
     // Only care about If statements.
     if (isa<IfStmt>(s)) {
       IfStmt *IfStatement = cast<IfStmt>(s);
@@ -70,7 +70,40 @@ public:
     }
 
     return true;
-  }
+  }*/
+  bool VisitFunctionDecl(FunctionDecl *f) {
+		if (f->isThisDeclarationADefinition()) {
+			FullSourceLoc loc = Context->getFullLoc (f->getLocStart() );
+      			llvm::outs()<<f->getQualifiedNameAsString()<<" declared at " << loc.getSpellingLineNumber()<<":"<<loc.getSpellingColumnNumber();
+			unsigned num_param =f->getNumParams(); 
+			outs()<<".Number of parameters = "<<num_param<<"\n";
+			if (num_param > 0 ){
+				ArrayRef< ParmVarDecl * > param_array=f->parameters();
+				for(unsigned i=0;i<num_param;i++){
+					outs()<<"\t"<<param_array[i]->getNameAsString()<<"\t";
+					QualType type=param_array[i]->getOriginalType();
+					outs()<<type.getAsString()<<"\n";
+				}
+			}
+			Stmt *body = f->getBody();
+			body->dumpColor();
+			clang::Stmt::child_iterator begin= body->child_begin();
+			clang::Stmt::child_iterator end= body->child_end();
+			while(begin != end){
+
+
+				std::string stmt_type=begin->getStmtClassName();
+				//cout<<a<<"\n";
+				if (stmt_type.compare("DeclStmt")==0 ){
+					
+		
+				}	
+				begin++;
+			}
+			
+		}
+		return true;
+	}
 
 private:
   Rewriter &TheRewriter;
