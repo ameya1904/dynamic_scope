@@ -11,6 +11,7 @@
 #include "clang/Driver/Options.h"
 #include "clang/AST/AST.h"
 #include "clang/AST/ASTContext.h"
+#include "clang/AST/RecordLayout.h"
 #include "clang/Frontend/ASTConsumers.h"
 #include "clang/Rewrite/Core/Rewriter.h"
 
@@ -24,6 +25,7 @@ Rewriter rewriter;
 static llvm::cl::OptionCategory MyToolCategory("example options");
 static cl::extrahelp CommonHelp(CommonOptionsParser::HelpMessage);
 static cl::extrahelp MoreHelp("\nMore help text...");
+static int rec_type=4;
 
 class FindNamedClassVisitor : public RecursiveASTVisitor<FindNamedClassVisitor> {
 public:
@@ -32,16 +34,36 @@ public:
         rewriter.setSourceMgr(Context->getSourceManager(),
             Context->getLangOpts());
     }
-  
- /* bool VisitCXXRecordDecl(CXXRecordDecl *rd) {
-      FullSourceLoc FullLocation = Context->getFullLoc(Declaration->getLocStart());
-      if (FullLocation.isValid()){
-      
-      //`  rewriter.InsertTextBefore(Declaration->getLocStart() , "\/* inserted text *\/");
-      }                 
-    }
-    return true;
-  }*/
+	 
+
+	bool VisitRecordDecl(RecordDecl *rd) {
+      		FullSourceLoc FullLocation = Context->getFullLoc(rd->getLocStart());
+      		if (FullLocation.isValid()){
+			//outs()<<rd->getQualifiedNameAsString()<<"\n";
+			const clang::ASTRecordLayout &typeLayout(rd->getASTContext().getASTRecordLayout(rd));
+			struct rec_dict object;
+			object.name.assign("struct "+rd->getQualifiedNameAsString());
+			object.num_mem=0;
+			for(clang::RecordDecl::field_iterator fit = rd->field_begin(); fit != rd->field_end(); fit++) {
+			    	object.num_mem++;
+				const clang::QualType qualType = fit->getType().getLocalUnqualifiedType().getCanonicalType();
+				size_t fieldOffset = typeLayout.getFieldOffset(fit->getFieldIndex());
+			   	//std::cout << "member '"<<fit->getNameAsString() << qualType.getAsString() << "' with " << fieldOffset << "bytes offset\n";
+				struct rec_mem mem_object;
+				const Type* type=(fit->getType()).getTypePtr();
+				mem_object.name.assign(fit->getNameAsString());
+				mem_object.type=get_type_enc(type,fit->getNameAsString());
+				mem_object.offset=typeLayout.getFieldOffset(fit->getFieldIndex());
+				object.members.push_back(mem_object);
+			}
+			object.type=rec_type;
+			record_dict.push_back(object);
+			rec_type++;
+	      		//rewriter.InsertTextBefore(Declaration->getLocStart() , "\/* inserted text *\/");
+     		 }                 
+    
+    		return true;
+	  }
   
   
 	bool VisitFunctionDecl(FunctionDecl *f) {
@@ -120,9 +142,10 @@ public:
 	bool VisitVarDecl(VarDecl* vd){
 		stringstream buf;
 		bool is_new;
+		const Type* type=(vd->getType()).getTypePtr();
 		SourceManager &SM = rewriter.getSourceMgr();		
 		FullSourceLoc loc = Context->getFullLoc (vd->getLocStart() );
-		if(is_new=var_exists(vd->getQualifiedNameAsString())){
+		if(is_new=var_exists(vd->getQualifiedNameAsString()) && (vd->getQualifiedNameAsString()).size()>0 ){
 				//inserting globa_storage here.
 				struct global_storage object;
 				object.name.assign(vd->getQualifiedNameAsString());
@@ -135,7 +158,8 @@ public:
 					for(vector<global_storage>::iterator i=glob_stor.begin();i!=glob_stor.end();i++){
 				//outs()<<i->name<<"\n";
 			}
-			buf<<"if(add_node("<<get_index(vd->getQualifiedNameAsString())<<","<<get_type_enc(vd)<<","<<get_size(vd)<<",&ltb[l_varcount])==1)\n";
+			outs()<<vd->getQualifiedNameAsString()<<"\t"<<get_type_enc(type,QualType::getAsString(vd->getType().split()))<<"\n";
+			buf<<"if(add_node("<<get_index(vd->getQualifiedNameAsString())<<","<<get_type_enc(type,vd->getQualifiedNameAsString())<<","<<get_size(vd)<<",&ltb[l_varcount])==1)\n";
 			buf<<"\ttop=na_push(top,"<<get_index(vd->getQualifiedNameAsString())<<");\n";
 			buf<<"else\n\tl_varcount++;\n";
 			/*
@@ -154,8 +178,7 @@ public:
 		return true;	
 	}
 
-	int get_type_enc(VarDecl* vd){
-	         	const Type* type=(vd->getType()).getTypePtr();
+	int get_type_enc(const Type* type,string type_name){   
 			if (type->isIntegerType()){
 				return 0;
 			}
@@ -172,7 +195,18 @@ public:
 					return 3;
 				}
 			}
-			return -99;
+			else{
+				for(vector<rec_dict>::iterator i=record_dict.begin();i!=record_dict.end();i++){
+					//outs()<<"a--\t"<<type_name<<"\t"<<i->name<<"\t"<<i->type<<"\t"<<i->num_mem<<"\n";
+					/*for(vector<rec_mem>::iterator h=i->members.begin();h!=i->members.end();h++){
+						outs()<<"\t"<<h->name<<"\t"<<h->type<<"\t"<<h->offset<<"\n";
+					}*/
+					if(type_name.compare(i->name)==0){
+						return i->type;
+					}
+				}
+				return -99;
+			}
 	         } 
 	
 	int get_fl_index(string str){
@@ -231,11 +265,16 @@ public:
 		}
 		for(vector <VarDecl*>::iterator i=glob_loc.begin();i!=glob_loc.end();i++){
 			stringstream buf;
-			buf<<"if(add_node("<<get_index( (*i)->getQualifiedNameAsString())<<","<<get_type_enc((*i))<<","<<get_size((*i))<<",&ltb[l_varcount])==1)\n";
+			const Type* type=((*i)->getType()).getTypePtr();
+			buf<<"if(add_node("<<get_index( (*i)->getQualifiedNameAsString())<<","<<get_type_enc(type,(*i)->getQualifiedNameAsString())<<","<<get_size((*i))<<",&ltb[l_varcount])==1)\n";
 			buf<<"\ttop=na_push(top,"<<get_index((*i)->getQualifiedNameAsString())<<");\n";
 			buf<<"else\n\tl_varcount++;\n";
 			rewriter.InsertText(main_loc,buf.str(),true,true);
-		}	
+		}
+		for(vector<global_storage>::iterator i=glob_stor.begin();i!=glob_stor.end();i++){
+			//outs()<<(i)->name<<"\t"<<(i)->type<<"\t"<<i->size<<"\n";   
+			
+		}
 
 	}
 private:
@@ -247,6 +286,17 @@ private:
  	int type;
 	int size;
   };
+  struct rec_mem{
+  	string name;
+	int type;
+	int offset;
+  };
+  struct rec_dict{
+  	string name;
+	int type;
+	int num_mem;
+	vector<struct rec_mem> members;
+  };
   struct function_list{
   	string name;
 	string return_type;
@@ -257,8 +307,8 @@ private:
 	SourceLocation sl;
 	string return_type;
   };
-
   vector <VarDecl*> glob_loc;
+  vector <struct rec_dict> record_dict;
   vector <struct func_location>func_loc;
   vector <struct function_list>func_list;
   vector <struct global_storage> glob_stor ;
@@ -290,6 +340,6 @@ int main(int argc,const char **argv) {
   ClangTool Tool(OptionsParser.getCompilations(),
                  OptionsParser.getSourcePathList());
   int result = Tool.run(newFrontendActionFactory<FindNamedClassAction>().get());
-  rewriter.getEditBuffer(rewriter.getSourceMgr().getMainFileID()).write(errs());
+  //rewriter.getEditBuffer(rewriter.getSourceMgr().getMainFileID()).write(errs());
   return result;
 }
