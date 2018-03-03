@@ -1,4 +1,5 @@
 #include<iostream>
+#include<stdio.h>
 #include<string.h>
 #include<sstream>
 #include "clang/AST/ASTConsumer.h"
@@ -24,7 +25,9 @@
 #include "llvm/ADT/APFloat.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "clang/Basic/Diagnostic.h"
-
+#include "clang/Lex/Lexer.h"
+#include "clang/Lex/Token.h"
+#include "text.h"
 using namespace std;
 using namespace llvm;
 using namespace clang;
@@ -36,15 +39,20 @@ static llvm::cl::OptionCategory MyToolCategory("example options");
 static cl::extrahelp CommonHelp(CommonOptionsParser::HelpMessage);
 static cl::extrahelp MoreHelp("\nMore help text...");
 static int rec_type=4;
-struct undefined{
+struct undefined32{
 	SourceLocation loc;
 	string name;
+	bool mark;
+	int type;
+	int offset;
+	string write;
 };
-vector <struct undefined > undef_loc;
+vector <struct undefined32 > undef_loc;
 SourceManager* undef_sm;
-
+int undef_len=0;
+vector<struct undefined32> undef_list[500];
 template<class T> class SmallVectorImpl;
-
+SourceLocation glob_var_loc;
 class FindNamedClassVisitor : public RecursiveASTVisitor<FindNamedClassVisitor> {
 	public:
 		explicit FindNamedClassVisitor(ASTContext *Context)
@@ -68,7 +76,7 @@ class FindNamedClassVisitor : public RecursiveASTVisitor<FindNamedClassVisitor> 
 				for(clang::RecordDecl::field_iterator fit = rd->field_begin(); fit != rd->field_end(); fit++) {
 					object.num_mem++;
 					const clang::QualType qualType = fit->getType().getLocalUnqualifiedType().getCanonicalType();
-					size_t fieldOffset = typeLayout.getFieldOffset(fit->getFieldIndex());
+					//size_t fieldOffset = typeLayout.getFieldOffset(fit->getFieldIndex());
 					//std::cout << "member '"<<fit->getNameAsString() << qualType.getAsString() << "' with " << fieldOffset << "bytes offset\n";
 					struct rec_mem mem_object;
 					const clang::Type* type=(fit->getType()).getTypePtr();
@@ -82,6 +90,7 @@ class FindNamedClassVisitor : public RecursiveASTVisitor<FindNamedClassVisitor> 
 				record_dict.push_back(object);
 				rec_type++;
 				//rewriter.InsertTextBefore(Declaration->getLocStart() , "\/* inserted text *\/");
+				rewriter.ReplaceText(rd->getSourceRange(),"");
 			}                 
 
 			return true;
@@ -122,6 +131,31 @@ class FindNamedClassVisitor : public RecursiveASTVisitor<FindNamedClassVisitor> 
 				begin++;
 				}
 				*/
+				Stmt* body=f->getBody();
+				SourceLocation sl=body->getLocEnd(),tmp;
+				loc = Context->getFullLoc (sl);
+				tmp=sl;
+				//cout<<loc.getSpellingLineNumber()<<"\n";
+				int found=0;
+				string line="";
+				for(int i=0;i<100 && found!=2;i++){
+					if(SM.getCharacterData(tmp)[0]==';'){
+						found++;
+					}
+					line=line+SM.getCharacterData(tmp)[0];
+					tmp=tmp.getLocWithOffset(-1);
+				}
+				std::reverse(line.begin(),line.end());
+				//cout<<line;
+				struct ret_struct obj;
+				obj.line.assign(line);
+				obj.loc=tmp;
+				return_loc.push_back(obj);
+				
+				stringstream ss;
+				ss<<"\nrestore(ltb,l_varcount);\nna_pop(top);\n";
+				rewriter.InsertText(tmp.getLocWithOffset(2),ss.str(),true,true);
+
 				struct func_location object;
 				object.name.assign(f->getQualifiedNameAsString());
 				object.sl=(f->getBody())->getLocStart();
@@ -231,7 +265,7 @@ class FindNamedClassVisitor : public RecursiveASTVisitor<FindNamedClassVisitor> 
 			FullSourceLoc loc = Context->getFullLoc (vd->getLocStart() );
 			int type_enc=get_type_enc(type,QualType::getAsString(vd->getType().split()));
 
-			if(is_new=var_exists(vd->getQualifiedNameAsString()) && (vd->getQualifiedNameAsString()).size()>0 ){
+			if((is_new=var_exists(vd->getQualifiedNameAsString())) &&( (vd->getQualifiedNameAsString()).size()>0) ){
 				//inserting globa_storage here.
 				struct global_storage object;
 				object.name.assign(vd->getQualifiedNameAsString());
@@ -254,7 +288,7 @@ class FindNamedClassVisitor : public RecursiveASTVisitor<FindNamedClassVisitor> 
 					int index=get_rec_dict_index(type_enc),count=0;
 					//cout<<record_dict[index].name<<"\n";
 					for(vector<struct rec_mem>::iterator i=record_dict[index].members.begin();i!=record_dict[index].members.end();i++){
-						buf<<"*(int*)gtb["<<gtb_index<<"].gen_ptr)->value+"<<count*sizeof(int)<<")="<<i->type<<"\n";
+						buf<<"*(int*)gtb["<<gtb_index<<"].gen_ptr)->value+"<<count*sizeof(int)<<")="<<i->type<<";\n";
 						//	cout<<i->name<<"\t"<<i->type<<"\n";
 						count++;
 					}
@@ -298,7 +332,7 @@ class FindNamedClassVisitor : public RecursiveASTVisitor<FindNamedClassVisitor> 
 						}	
 					}
 					else if(type_enc>3){
-						int how_much_init,mem=0;
+						int how_much_init;
 						if(size/sizeof(int)<=init_val.size()){
 							how_much_init=size/sizeof(int);
 						}
@@ -330,10 +364,35 @@ class FindNamedClassVisitor : public RecursiveASTVisitor<FindNamedClassVisitor> 
 					cout<<*(float*)(i->arr)<<"\n";			
 					}*/
 				}	
-				rewriter.InsertText(vd->getLocStart(),buf.str(),true,true);
+				SourceRange range=vd->getSourceRange();
+				rewriter.ReplaceText(range,buf.str());
+				//writer.InsertText(vd->getLocStart(),buf.str(),true,true);
 				var_count++;
 			}
+			if(vd->isLocalVarDeclOrParm() && !vd->isLocalVarDecl()){
+				//FullSourceLoc loc = Context->getFullLoc (vd->getLocStart() );
+				//cout<<loc.getSpellingLineNumber()<<"\n";
+				SourceLocation sloc=vd->getLocStart();
+				bool loop=true;
+				for(int i=0;i<50 && loop;i++){//cout<<SM.getCharacterData(sloc)[0];
+					if(SM.getCharacterData(sloc)[0]=='{'){
+						loop=false;
+					}
+					else{
+						sloc=sloc.getLocWithOffset (1);	
+					}
+				}
+				stringstream write;
+				if(type_enc==0){
+					write<<"\n*(int*)(gtb["<<gtb_index<<"].gen_ptr)->value="<<vd->getQualifiedNameAsString()<<";";
+				}
+				else if(type_enc==1){
+					write<<"\n*(float*)(gtb["<<gtb_index<<"].gen_ptr)->value="<<vd->getQualifiedNameAsString()<<";";	
+				}
+				rewriter.InsertText(sloc.getLocWithOffset(1),write.str(),true,true);
+			}
 			if(vd->hasGlobalStorage()){
+				glob_var_loc=vd->getLocStart();
 				glob_loc.push_back(vd);
 			}
 			return true;	
@@ -421,11 +480,11 @@ class FindNamedClassVisitor : public RecursiveASTVisitor<FindNamedClassVisitor> 
 
 		bool VisitDeclRefExpr(const DeclRefExpr *dre) {
 			SourceLocation loc_start=dre->getLocStart();
-			FullSourceLoc loc = Context->getFullLoc (dre->getLocStart() );
+			//FullSourceLoc loc = Context->getFullLoc (dre->getLocStart() );
 			SourceManager &SM = rewriter.getSourceMgr();
 			string name;
-			outs()<<" declared at " << loc.getSpellingLineNumber()<<":"<<loc.getSpellingColumnNumber()<<"\n";
-			//for(vector<struct undefined>::iterator i=undef_loc.begin();i!=undef_loc.end();i++){
+			//outs()<<" declared at " << loc.getSpellingLineNumber()<<":"<<loc.getSpellingColumnNumber()<<"\n";
+			//for(vector<struct undefined32>::iterator i=undef_loc.begin();i!=undef_loc.end();i++){
 			//i->dump(*undef_sm);
 			//	cout<<i->name<<"\t";i->loc.dump(*undef_sm);cout<<"\n";
 			//}	
@@ -433,9 +492,9 @@ class FindNamedClassVisitor : public RecursiveASTVisitor<FindNamedClassVisitor> 
 				const clang::Type* type=(dre->getType()).getTypePtr();
 				int type_enc=get_type_enc(type,QualType::getAsString(t->getType().split()));
 				int gtb_index=get_index(t->getQualifiedNameAsString());
-				int size=get_size(type_enc,type);
-				int num_mem=get_num_mem(type_enc,type);
-				SourceRange range=dre->getSourceRange();
+				//int size=get_size(type_enc,type);
+				//int num_mem=get_num_mem(type_enc,type);
+				//SourceRange range=dre->getSourceRange();
 
 				//cout<<"a\t"<<QualType::getAsString(dre->getType().split())<<"\n";
 
@@ -453,7 +512,7 @@ class FindNamedClassVisitor : public RecursiveASTVisitor<FindNamedClassVisitor> 
 					int found=0;
 					SourceLocation tmp=loc_start,open,close;
 					for(int i=0;i<100 && found!=2;i++){
-						if(found==1 && SM.getCharacterData(tmp)[0]!=']'){
+						if(found==1 && SM.getCharacterData(tmp)[0]!=']' && SM.getCharacterData(tmp)[0]!=32){
 							arr_index<<SM.getCharacterData(tmp)[0];
 						}
 						if( SM.getCharacterData(tmp)[0]=='[') {
@@ -469,21 +528,23 @@ class FindNamedClassVisitor : public RecursiveASTVisitor<FindNamedClassVisitor> 
 					}
 					cout<<arr_index.str();
 					bool has_only_digits = (arr_index.str().find_first_not_of( "0123456789" ) == string::npos);
-					buf<<"*(int*)((gtb["<<gtb_index<<"].gen_ptr)->value+sizeof(int))";
+					buf<<"*(int*)((gtb["<<gtb_index<<"].gen_ptr)->value+sizeof(int)";
 					if(has_only_digits){
 						//ut<<"num";
 						int value=atoi(arr_index.str().c_str());
 						//ut<<value;
-						
-						buf<<value;
+
+						buf<<"*"<<value<<")";
 					}
-					rewriter.ReplaceText(open,1," ");
+					while(open!=close){
+						rewriter.ReplaceText(open,1," ");
+						open=open.getLocWithOffset (1);}
 					rewriter.ReplaceText(close,1," ");
 					/*else{
-						cout<<"char";
-						int index=get_index(arr_index.str());
-						buf<<"*(int*)(gtb["<<gtb_index<<"].gen_ptr)->value+*(int*)gtb["<<index<<"].gen_ptr->value";
-					}*/
+					  cout<<"char";
+					  int index=get_index(arr_index.str());
+					  buf<<"*(int*)(gtb["<<gtb_index<<"].gen_ptr)->value+*(int*)gtb["<<index<<"].gen_ptr->value";
+					  }*/
 					//nst TemplateArgument & targ=taloc->getArgument();
 					//vm::APSInt size=targ.getAsIntegral () ;
 					//cout<<size.getLimitedValue(UINT64_MAX)<<"sadasd\n";
@@ -494,7 +555,7 @@ class FindNamedClassVisitor : public RecursiveASTVisitor<FindNamedClassVisitor> 
 					int found=0;
 					SourceLocation tmp=loc_start,open,close;
 					for(int i=0;i<100 && found!=2;i++){
-						if(found==1 && SM.getCharacterData(tmp)[0]!=']'){
+						if(found==1 && SM.getCharacterData(tmp)[0]!=']' && SM.getCharacterData(tmp)[0]!=32) {
 							arr_index<<SM.getCharacterData(tmp)[0];
 						}
 						if( SM.getCharacterData(tmp)[0]=='[') {
@@ -510,15 +571,17 @@ class FindNamedClassVisitor : public RecursiveASTVisitor<FindNamedClassVisitor> 
 					}
 					cout<<arr_index.str();
 					bool has_only_digits = (arr_index.str().find_first_not_of( "0123456789" ) == string::npos);
-					buf<<"*(float*)((gtb["<<gtb_index<<"].gen_ptr)->value+sizeof(int))";
+					buf<<"*(float*)((gtb["<<gtb_index<<"].gen_ptr)->value+sizeof(int)*";
 					if(has_only_digits){
 						//ut<<"num";
 						int value=atoi(arr_index.str().c_str());
 						//ut<<value;
-						
-						buf<<value;
+
+						buf<<value<<")";
 					}
-					rewriter.ReplaceText(open,1," ");
+					while(open!=close){
+						rewriter.ReplaceText(open,1," ");
+						open=open.getLocWithOffset (1);}
 					rewriter.ReplaceText(close,1," ");
 
 				}
@@ -567,7 +630,7 @@ class FindNamedClassVisitor : public RecursiveASTVisitor<FindNamedClassVisitor> 
 						open=open.getLocWithOffset (1);
 					}
 				}
-				
+
 				rewriter.ReplaceText(loc_start,name.length(),buf.str());
 
 			}
@@ -649,6 +712,32 @@ class FindNamedClassVisitor : public RecursiveASTVisitor<FindNamedClassVisitor> 
 			}
 			return ret;
 		}
+
+		int type_check(struct undefined32 obj){
+			//cout<<"\nas\t"<<obj.name<<"\t"<<Context->getFullLoc(obj.loc).getSpellingLineNumber();
+			int count=0;
+			bool found=false;
+			SourceManager &sm = rewriter.getSourceMgr();
+			SourceLocation tmp=obj.loc;
+			tmp.getLocWithOffset(obj.name.length());
+			char c;
+			for(int i=0;i<100 && !found;i++){
+				//cout<<sm.getCharacterData(tmp)[0];
+				c=sm.getCharacterData(tmp)[0];
+				if((c>='a' && c<='z') || (c>='A' && c<='Z') || (c>='0' && c<='9') || c==32 || c=='_'){
+					tmp=tmp.getLocWithOffset(1);
+					count++;
+				}
+				else{
+					found=true;	
+				}
+			}
+			//cout<<sm.getCharacterData(tmp)<<"\n\n";
+
+			return count;
+
+		}
+
 		~FindNamedClassVisitor(){
 			SourceLocation main_loc;
 			for(vector <func_location>::iterator i=func_loc.begin();i!=func_loc.end();i++){
@@ -656,7 +745,10 @@ class FindNamedClassVisitor : public RecursiveASTVisitor<FindNamedClassVisitor> 
 				if(i->name.compare("main")==0){
 					buf<<"\ncreate("<<var_count<<");";
 				}
-				buf<<"\nstruct new_added* top=NULL;\nint l_varcount=0;\n"<<i->return_type<<" ret;\n";
+				buf<<"\nstruct new_added* top=NULL;\nint l_varcount=0;\n";
+				if(i->return_type.compare("void")!=0){
+					buf<<i->return_type<<" ret;\n";
+				}
 				int index=get_fl_index(i->name);
 				buf<<"struct ltable ltb["<<func_list[index].lvar_count <<"];\n";
 				rewriter.InsertText(i->sl,buf.str(),true,true);
@@ -672,16 +764,363 @@ class FindNamedClassVisitor : public RecursiveASTVisitor<FindNamedClassVisitor> 
 				buf<<"\ttop=na_push(top,"<<get_index((*i)->getQualifiedNameAsString())<<");\n";
 				buf<<"else\n\tl_varcount++;\n";
 				rewriter.InsertText(main_loc,buf.str(),true,true);
+				rewriter.ReplaceText((*i)->getSourceRange(),"");
 			}
 			for(vector<global_storage>::iterator i=glob_stor.begin();i!=glob_stor.end();i++){
 				//outs()<<(i)->name<<"\t"<<(i)->type<<"\t"<<i->size<<"\n";   
 
 			}
+			SourceManager &sm = rewriter.getSourceMgr();
+			for(vector<struct undefined32>::iterator i=undef_loc.begin();i!=undef_loc.end();i++){
+				//cout<<i->name<<"\t";
+				//i->loc.dump(sm);
+				//cout<<"\n";
+				int match=0;
+				for(vector<struct global_storage>::iterator j=glob_stor.begin();j!=glob_stor.end() && match==0 ;j++){
+					if(i->name.compare(j->name)==0){
+						match=1;
+					}
+				}
+				if(match==0){
+					cout<<"Error : Declaration for variable "<<i->name<<" not found.\n";
+					exit(100);
+				}
+				else{
+					/*SourceLocation tmp=i->loc,tmp2=tmp,open,close;
+					  bool brace=false,colon=false,found=false;
+					  for(int k=0;k<100 && !found;k++){
+					  if(sm.getCharacterData(tmp)[0]==';'){
+					  colon=true;
+					  found=true;
+					  }
+					  else if(sm.getCharacterData(tmp)[0]=='('){
+					  brace=true;
+					  found=true;
+					  }
+					  else{
+					  tmp=tmp.getLocWithOffset (-1);
+					  }
+					  }
+					  open=tmp.getLocWithOffset(1);
+					  if(brace){
+					  cout<<"brace";
+					  found=false;
+					  for(int k=0;k<100 && !found;k++){
+					  if(sm.getCharacterData(tmp2)[0]==')'){
+					  found=true;
+					  }
+					  else{
+					  tmp2=tmp2.getLocWithOffset (1);
+					  }
+					  }
+					  close=tmp2;
+
+					  }
+					  else if(colon){
+					  cout<<"colon";
+					  found=false;
+					  for(int k=0;k<100 && !found;k++){
+					  if(sm.getCharacterData(tmp2)[0]==';'){
+					  found=true;
+					  }
+					  else{
+					  tmp2=tmp2.getLocWithOffset (1);
+					  }
+					  }
+					  close=tmp2;
+					  }*/
+					//while(open!=close){
+					//	cout<<sm.getCharacterData(open)[0];
+					//	open=open.getLocWithOffset(1);
+					//}cout<<"\n";
+
+					Token tok;
+					Lexer::getRawToken(i->loc,tok,sm,rewriter.getLangOpts(),true);
+					//cout<<tok.getRawIdentifier().data()[tok.getLength()];
+					//strcpy(tok_name,tok.getName());
+
+
+				}
+			}
+
+
+			//for(vector<struct undefined32>::iterator i=undef_loc.begin();i!=undef_loc.end();i++){
+			//	cout<<"\n"<<i->name<<"\t"<<Context->getFullLoc(i->loc).getSpellingLineNumber()<<"\t"<<i->mark;
+			//}
+			for(vector<struct undefined32>::iterator i=undef_loc.begin();i!=undef_loc.end();i++){
+				if(i->mark){
+					for(vector<struct undefined32>::iterator j=undef_loc.begin();j!=undef_loc.end() ;j++){	
+						if(Context->getFullLoc(i->loc).getSpellingLineNumber()==Context->getFullLoc(j->loc).getSpellingLineNumber()){
+							//struct undefined32 object=*j;
+							(undef_list[undef_len]).push_back(*j);
+							//undef_loc.erase(undef_loc.begin()+pos);
+							j->mark=false;
+							//cout<<"\nasd\t"<<j->name<<"\n";
+						}
+					}
+					undef_len++;
+				}
+			}
+			//cout<<"\n"<<undef_len;
+			SourceLocation if_pos,tmp;
+			bool found=false;
+
+			for(int i=0;i<undef_len;i++){
+				tmp=undef_list[i][0].loc;
+				found=false;
+				for(int k=0;k<100 && !found;k++){
+					if(sm.getCharacterData(tmp)[0]==';' || sm.getCharacterData(tmp)[0]=='{'){
+						found=true;
+					}
+					else{
+						tmp=tmp.getLocWithOffset (-1);	
+					}
+				}
+				if_pos=tmp.getLocWithOffset (1);
+				//cout<<sm.getCharacterData(tmp)<<"\n\n\n\n";
+				stringstream ifbuf;
+				ifbuf<<"\nif(";
+				for(vector<struct undefined32>::iterator j=undef_list[i].begin();j!=undef_list[i].end();j++ ){
+					//cout<<"\n"<<i<<"\t"<<j->name;
+					//int num_mem;
+					SourceLocation member,open,close;
+					int offset =type_check(*j);
+					member=j->loc.getLocWithOffset (offset);
+					int gtb_index=get_index(j->name);
+					string write="";
+
+
+					//cout<<"\n"<<sm.getCharacterData(member)<<"\n\n";
+					if(sm.getCharacterData(member)[0]=='['){
+						stringstream ss;
+						ifbuf<<"(gtb["<<gtb_index<<"].gen_ptr)->type!=2 && (gtb["<<gtb_index<<"].gen_ptr)->type!=3 &&";
+						j->type=1;
+						int found=0;
+						SourceLocation tmp32=member;
+						for(int l=0;l<10 && found!=2;l++){
+							if(found==1 && sm.getCharacterData(tmp32)[0]!=']'){
+								write=write+sm.getCharacterData(tmp32)[0];
+							}
+							if( sm.getCharacterData(tmp32)[0]=='[') {
+								found++;
+								open=tmp32;
+							}
+							if( sm.getCharacterData(tmp32)[0]==']'){
+								found++;
+								close=tmp32;
+							}
+							tmp32=tmp32.getLocWithOffset (1); 
+
+						}
+						ifbuf<<"(gtb["<<gtb_index<<"].gen_ptr)->num_mem<"<<write<<" && ";
+						ss<<"*(float*)((gtb["<<gtb_index<<"].gen_ptr)->value+sizeof(int)*"<<write<<")";
+						j->write.assign(ss.str());
+						int offset=0;
+						while(open!=close){
+							rewriter.ReplaceText(open,1," ");
+							open=open.getLocWithOffset (1);
+							offset++;
+						}
+						//rewriter.ReplaceText(j->loc,j->name.length(),ss.str());
+						rewriter.ReplaceText(close,1," ");
+						j->offset=offset+1;
+
+					}
+					else if(sm.getCharacterData(member)[0]=='.'){
+						stringstream ss;
+						ifbuf<<"(gtb["<<gtb_index<<"].gen_ptr)->type<3 &&";
+						j->type=2;
+						int found=0,count=0;
+						SourceLocation tmp9=j->loc,open,close;
+						stringstream member;
+						char c;
+						for(int p=0;p<100 &&found!=2;p++){
+							c=sm.getCharacterData(tmp9)[0];
+							if(found==0 && sm.getCharacterData(tmp9)[0]=='.'){
+								found++;
+							}
+							if(found==1 && ( (c>='a' && c<='z') || (c>='0' && c<='9') || ( c>='A'&& c<='Z')) ){
+								member<<sm.getCharacterData(tmp9)[0];
+								open=tmp9;
+							}
+							if(found==1 && (c==32 || !(c>='a' && c<='z') || (c>='0' && c<='9') || ( c>='A'&& c<='Z'))  && member.str().length()>0){
+								found++;
+								close=tmp9;
+							}
+							tmp9=tmp9.getLocWithOffset (1);
+							count++;
+							//cout<<c;
+						}
+						//cout<<"\n"<<member.str()<<"\t";
+						/*int member_index=0,match=0;
+						  for(vector<struct rec_mem>::iterator p=record_dict[rec_index].members.begin();p!=record_dict[rec_index].members.end() && match==0; p++ ){
+						  if(member.str().compare(p->name)==0 ){
+						  match=1;
+						  }	
+						  member_index++;
+						  }
+						  member_index--;
+						  */
+						open=open.getLocWithOffset (-2);
+						ss<<"*(float*)(gtb["<<gtb_index<<"].gen_ptr)->value";
+						j->write.assign(ss.str());
+						int offset=0;
+						while(open!=close){
+							//cout<<sm.getCharacterData(open)[0];
+							rewriter.ReplaceText(open,1,"");
+							open=open.getLocWithOffset (1);
+							offset++;
+						}
+						j->offset=offset;
+					}
+						  else{
+							  stringstream ss;
+							  ifbuf<<"(gtb["<<gtb_index<<"].gen_ptr)->type!=1 && (gtb["<<gtb_index<<"].gen_ptr)->type!=0 &&";
+							  j->type=0;
+							  ss<<"*(float*)(gtb["<<gtb_index<<"].gen_ptr)->value)";
+							  j->write.assign(ss.str());
+							  j->offset=0;
+						  }
+
+				}
+				ifbuf<<"true){\nprintf(\"Type mismatch occured.\");exit(100);\n}else{\n";
+				bool loop=true;
+				SourceLocation sloc;
+				//int init_pos=if_pos.getRawEncoding();
+				//cout<<Context->getFullLoc (if_pos).getSpellingLineNumber();
+				loop=true;
+				//int cc=0;
+				string line="";
+				Token tok;
+				sloc=if_pos;
+				for(int m=0;m<100 && loop;m++){
+					if(sm.getCharacterData(sloc)[0]==';'){
+						loop=false;
+					}
+					else {
+						line=line+sm.getCharacterData(sloc)[0];
+						sloc=sloc.getLocWithOffset (1);
+					}
+				}
+				//cout<<hex<<line<<"\t"<<line.length()<<"\n";
+				//for(int m=0;m<line.length();m++){
+				//	printf("%02x ",line[m]);
+				//}
+				sloc=if_pos;
+				//Lexer::getRawToken(sloc,tok,sm,rewriter.getLangOpts(),true);
+				//sloc=sloc.getLocWithOffset(tok.getLength());
+				//cout<<tok.getRawIdentifier().data()<<"\n";
+				int tok_off=0,start=0,end=line.length();
+				for(int m=0;start<end;m++){
+					Lexer::getRawToken(sloc,tok,sm,rewriter.getLangOpts(),true);
+					sloc=sloc.getLocWithOffset(tok.getLength());
+					//ut<<tok.getLength()<<"\t";
+					tok_off+=tok.getLength();
+					string token="";
+					for(int q=0;q<tok.getLength();q++){
+						token=token+line[q+start];
+					}
+					start+=tok.getLength();
+					//cout<<"token\t"<<token<<"\n";
+
+					if(is_undefined(token)){
+						for(int i=0;i<undef_len;i++){
+							bool match=false;
+							for(vector<struct undefined32>::iterator j=undef_list[i].begin();j!=undef_list[i].end() &&!match;j++ ){
+								if(j->name.compare(token)==0){
+									match=true;
+									ifbuf<<j->write;
+									start+=j->offset;
+								}
+							}
+						}
+					}
+					else if(is_defined(token)){
+						int gtb_index=get_index(token);
+						ifbuf<<"*(float*)((gtb["<<gtb_index<<"].gen_ptr)->value)";
+					}
+					else {
+						ifbuf<<token;
+					}
+
+				}	
+
+				//for(int m=0;m<line.length();l+=offset){
+
+				//}
+				ifbuf<<";\n}";
+				//cout<<ifbuf.str();
+				rewriter.InsertText(if_pos,ifbuf.str(),true,true);
+				ifbuf.str("");
+			}
+
+			stringstream glob_buff;
+			glob_buff<<include_text;
+			//cout<<glob_buff.str();
+			rewriter.InsertText(glob_var_loc,glob_buff.str(),true,true);		
+
+
+			/*
+			SourceLocation sl;
+			for(vector<struct ret_struct>::iterator i=return_loc.begin();i!=return_loc.end();i++){
+				sl=i->loc;
+				Token tok;
+				int tok_off=0,start=0,end=i->line.length();
+				for(int j=0;j<25;j++){
+					cout<<sm.getCharacterData(sl)[0];
+					sl=sl.getLocWithOffset(1);
+				}
+			}
+			for(int m=0;start<end;m++){
+			  Lexer::getRawToken(tmp,tok,SM,rewriter.getLangOpts(),true);
+			  tmp=tmp.getLocWithOffset(tok.getLength());
+			//ut<<tok.getLength()<<"\t";
+			tok_off+=tok.getLength();
+			string token="";
+			for(int q=0;q<tok.getLength();q++){
+			token=token+line[q+start];
+			}
+			start+=tok.getLength();
+			//cout<<"token\t"<<token<<"\t"<<tok.getLength()<<"\n";
+			if(is_undefined())
+
+
+			}*///cout<<"--------------\n"<<SM.getCharacterData(return_loc);
+
 
 		}
+		bool is_undefined(string name){
+			bool match=false;
+			for(int i=0;i<undef_len;i++){
+				for(vector<struct undefined32>::iterator j=undef_list[i].begin();j!=undef_list[i].end() && !match;j++ ){
+					if(j->name.compare(name)==0){
+						match=true;				
+					}
+				}
+			}
+			return match;
+		}
+
+		bool is_defined(string str){
+			//int index=0;
+			bool match=false;
+			for (vector<global_storage>::iterator i=glob_stor.begin();i!=glob_stor.end() && !match ;i++){
+				if(str.compare(i->name)==0){
+					match=true;
+				}
+
+			}
+			return match;
+		}
+
+
 	private:
 		ASTContext *Context;
 		int var_count=0;
+		struct undef{
+			string tok;
+
+		};
 		struct global_storage{
 			string name;
 			void* gen_ptr;
@@ -713,7 +1152,12 @@ class FindNamedClassVisitor : public RecursiveASTVisitor<FindNamedClassVisitor> 
 		struct init_val_rec{
 			unsigned char arr[4];
 			int type;
+		};struct ret_struct{
+			string line;
+			SourceLocation loc;
 		};
+		vector<struct ret_struct> return_loc;
+
 		vector<struct init_val_rec> init_val;
 		vector <VarDecl*> glob_loc;
 		vector <struct rec_dict> record_dict;
@@ -733,7 +1177,7 @@ class FindNamedClassConsumer : public clang::ASTConsumer {
 
 
 		//clang::Sema &sema = Instance.getSema();
-		//llvm::SmallVector<std::pair< NamedDecl *, SourceLocation >,150> Undefined;
+		//llvm::SmallVector<std::pair< NamedDecl *, SourceLocation >,150> Undefined32;
 		//sema.getUndefinedButUsed(Undefined);
 		Visitor.TraverseDecl(Context.getTranslationUnitDecl());
 	}
@@ -759,7 +1203,7 @@ class MyDiagnosticConsumer : public clang::DiagnosticConsumer {
 			//llvm::errs() << Info.getID()<<"\n";
 			SourceManager &sm= Info.getSourceManager ();
 			undef_sm=&sm;
-			const SourceLocation& loc=Info.getLocation();
+			//nst SourceLocation& loc=Info.getLocation();
 			//undef_loc.push_back(Info.getLocation());
 			//const IdentifierInfo* id_info=Info.getArgIdentifier(Info.getID());
 			//unsigned int len=id_info->getLength();	
@@ -780,9 +1224,10 @@ class MyDiagnosticConsumer : public clang::DiagnosticConsumer {
 				}
 
 			}
-			struct undefined obj;
+			struct undefined32 obj;
 			obj.name.assign(ss.str());
 			obj.loc=Info.getLocation();
+			obj.mark=true;
 			undef_loc.push_back(obj);
 			/*string str1;str1.assign(message);
 			  string str2("'");
